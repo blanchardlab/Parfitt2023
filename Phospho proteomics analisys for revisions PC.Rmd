@@ -1,0 +1,396 @@
+---
+title: "Phospho Proteomics"
+author: "Frito"
+date: "06/10/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+```
+
+
+```{r data Pathway analysys}
+knitr::opts_chunk$set(echo = TRUE)
+#Data Analysis part1
+suppressPackageStartupMessages({
+  library(calibrate)
+  library(limma)
+  library(directPA)
+  library(org.Hs.eg.db)
+  library(reactome.db)
+  library(annotate)
+  library(PhosR)
+  library(ggplot2)
+  library(ClueR)
+  library(reactome.db)
+})
+
+#Seting up the data> the input data is supposed to be pre-processed intensity values for the groups in the cols and residues in the rows, works for other analisys too 
+
+
+#Phopho proteomics data normalized by protein abundance
+test=read.csv("YOURLOCATION,datapostall3")
+row.names(test) = test [,1]
+test [,1] = NULL
+
+#transform to Log2
+testAgL = log2(test)
+
+data("PhosphoSitePlus")
+
+data("PhosphoELM")
+
+ppe <- PhosphoExperiment(assays = list(Quantification = as.matrix(testAgL)))
+                         
+GeneSymbol(ppe) <- sapply(strsplit(rownames(ppe), ";"), "[[", 2)
+Residue(ppe) <- gsub("[0-9]","", sapply(strsplit(rownames(ppe), ";"), "[[", 3))
+Site(ppe) <- as.numeric(gsub("[A-Z]","", sapply(strsplit(rownames(ppe), ";"), "[[", 3)))
+Sequence(ppe) <- sapply(strsplit(rownames(ppe), ";"), "[[", 4)
+
+sites = paste(sapply(GeneSymbol(ppe), function(x)x),";",
+                 sapply(Residue(ppe), function(x)x),
+                 sapply(Site(ppe), function(x)x),
+                 ";", sep = "")
+
+
+                  
+# fit linear model for each phosphosite
+f <- gsub("_exp\\d", "", colnames(ppe))
+X <- model.matrix(~ f - 1)
+fit <- lmFit(SummarizedExperiment::assay(ppe, "Quantification"), X)
+
+
+# extract top-ranked phosphosites for each condition compared to basal
+
+table.WT <- topTable(eBayes(fit), number=Inf, coef = 2)
+table.L166P <- topTable(eBayes(fit), number=Inf, coef = 1)
+DE1.RUV <- c( sum(table.WT[,"adj.P.Val"] < 0.05), sum(table.L166P[,"adj.P.Val"] < 0.05))
+
+# extract top-ranked phosphosites for each group comparison
+
+contrast.matrix1 <- makeContrasts(fL166P-fWT, levels=X)  # defining group comparisons
+fit1 <- contrasts.fit(fit, contrast.matrix1)
+table.L166PVSWT <- topTable(eBayes(fit1), number=Inf)
+
+write.csv(table.L166PVSWT,"YOURLOCATION")
+
+
+table.L166PVSWT<-PHOPHOtable_L166PVSWT2samplesonly
+
+DE2.RUV <- c(sum(table.L166PVSWT[,"adj.P.Val"] < 0.05))
+o <- rownames(table.L166PVSWT)
+Tc <-  cbind(table.L166PVSWT[o,"logFC"])
+rownames(Tc) <- sites[match(o, rownames(ppe))]
+rownames(Tc) <- gsub("(.*)(;[A-Z])([0-9]+)(;)", "\\1;\\3;", rownames(Tc))
+colnames(Tc) <- c("logFC")
+
+
+
+# summary phosphosite-level information to proteins for performing downstream
+# gene-centric analyses.
+Tc.gene <- phosCollapse(Tc, id=gsub(";.+", "", rownames(Tc)), 
+                        stat=apply(abs(Tc), 1, max), by = "max")
+geneSet <- names(sort(Tc.gene[,1], 
+                        decreasing = TRUE))[seq(round(nrow(Tc.gene) * 0.1))]
+
+head(geneSet)
+
+
+
+#Make the Reactome anottation
+pathways = as.list(reactomePATHID2EXTID)
+
+path_names = as.list(reactomePATHID2NAME)
+name_id = match(names(pathways), names(path_names))
+names(pathways) = unlist(path_names)[name_id]
+
+pathways = pathways[which(grepl("Homo sapiens", names(pathways), ignore.case = TRUE))]
+
+pathways = lapply(pathways, function(path) {
+    gene_name = unname(getSYMBOL(path, data = "org.Hs.eg"))
+    toupper(unique(gene_name))
+})
+
+
+# summary phosphosite-level information to proteins for performing downstream
+# gene-centric analyses.
+
+
+# 1D gene-centric pathway analysis
+path1 <- pathwayOverrepresent(geneSet, annotation=pathways, 
+                                universe = rownames(Tc.gene), alter = "greater")
+path2 <- pathwayRankBasedEnrichment(Tc.gene[,1], 
+                                    annotation=pathways, 
+                                    alter = "greater")
+
+lp1 <- -log10(as.numeric(path2[names(pathways),1]))
+lp2 <- -log10(as.numeric(path1[names(pathways),1]))
+plot(lp1, lp2, ylab="Overrepresentation (-log10 pvalue)", xlab="Rank-based enrichment (-log10 pvalue)", main="Comparison of 1D pathway analyses", xlim = c(0, 10))
+
+write.csv(path1,"YOURLOCATION")
+
+write.csv(path2,"YOURLOCATION")
+# select highly enriched pathways
+sel <- which(lp1 > 1.0 & lp2 > 0.4)
+textxy(lp1[sel], lp2[sel], gsub("_", " ", gsub("REACTOME_", "", names(pathways)))[sel])
+
+#2D direction site-centric kinase activity analyses
+#CANNOT APPLY TO THIS DATASET
+par(mfrow=c(1,2))
+dpa1 <- directPA(Tc[,c(1)], direction=0, 
+                 annotation=lapply(PhosphoSite.human, function(x){gsub(";[STY]", ";", x)}), 
+                 main="Direction pathway analysis")
+dpa2 <- directPA(Tc[,c(1)], direction=pi*7/4, 
+                 annotation=lapply(PhosphoSite.human, function(x){gsub(";[STY]", ";", x)}), 
+                 main="Direction pathway analysis")
+
+# top activated kinases
+dpa1$pathways[1:5,]
+
+dpa2$pathways[1:5,]
+
+z1 <- perturbPlot2d(Tc=Tc[,c(1,2)], 
+                    annotation=lapply(PhosphoSite.human, function(x){gsub(";[STY]", ";", x)}),
+                    cex=1, xlim=c(-2, 4), ylim=c(-2, 4), 
+                    main="Kinase perturbation analysis")
+
+
+              
+
+
+
+
+```
+
+
+
+```{r Contruction of signalomes }
+
+
+
+  suppressPackageStartupMessages({
+
+  library(PhosR)
+  library(dplyr)
+  library(ggplot2)
+  library(GGally)
+  library(ggpubr)
+  library(calibrate)
+  library(network)
+  library(ruv)
+  library(tidyr)
+  library(SummarizedExperiment)
+  library(reshape2)
+  library(biomaRt)  
+})
+
+#Kinase prediction analysis only used the upregulated kinase activity in L166P
+
+data("KinaseMotifs")
+data("KinaseFamily")
+
+test=read.csv("YOURLOCATION/datapostall3pos.csv")
+row.names(test) = test[,1]
+test[,1] = NULL
+
+data("PhosphoSitePlus")
+data("PhosphoELM")
+
+ppe <- PhosphoExperiment(assays = list(Quantification = as.matrix(test)))
+                         
+GeneSymbol(ppe) <- sapply(strsplit(rownames(ppe), ";"), "[[", 2)
+Residue(ppe) <- gsub("[0-9]","", sapply(strsplit(rownames(ppe), ";"), "[[", 3))
+Site(ppe) <- as.numeric(gsub("[A-Z]","", sapply(strsplit(rownames(ppe), ";"), "[[", 3)))
+Sequence(ppe) <- sapply(strsplit(rownames(ppe), ";"), "[[", 4)
+
+sites = paste(sapply(GeneSymbol(ppe), function(x)x),";",
+                 sapply(Residue(ppe), function(x)x),
+                 sapply(Site(ppe), function(x)x),
+                 ";", sep = "")
+
+grps <- gsub("_exp\\d", "", colnames(test))
+design = model.matrix(~ grps - 1)
+
+test = SummarizedExperiment::assay(ppe, "Quantification")
+
+
+#Generation of kinase-substrate relationship scores
+phospho.mean <- meanAbundance(test, grps = grps)
+aov <- matANOVA(mat=test, grps=grps)
+idx <- (aov < 0.05) 
+phospho.reg <- test[idx, ,drop = FALSE]
+
+phos.std <- standardise(phospho.reg)
+rownames(phos.std) <- paste0(GeneSymbol(ppe), ";", Residue(ppe), Site(ppe), ";")[idx]
+
+# We next extract the kinase recognition motifs from each phosphosite.
+
+phos.seq <- Sequence(ppe)[idx]
+
+# Now that we have all the inputs for kinaseSubstrateScore and kinaseSubstratePred ready, we can proceed to the generation of kinase-substrate relationship scores.
+
+L6.matrices <- kinaseSubstrateScore(substrate.list = PhosphoSite.human, 
+                                    mat = phos.std, seqs = phos.seq, 
+                                    numMotif = 3, numSub = 1, verbose = FALSE)
+set.seed(1)
+L6.predMat <- kinaseSubstratePred(L6.matrices, top=20, verbose = FALSE)
+L6.predMat = phosCollapse(L6.predMat, rownames(L6.predMat),
+                   stat = apply(abs(L6.predMat), 1, max),
+                   )
+
+sink('my_list_L6_matricesUPregu.txt')
+print(L6.matrices)
+sink()
+
+# Analisys of the "CDK5", "MAPK8", "CDK1" and "CDK2" specific pathways.
+columns_to_keep <- c("CDK5", "MAPK8", "CDK1", "CDK2")
+L6.predMat2 <- L6.predMat[, columns_to_keep]
+rownames(L6.predMat2) <- sub(";.*", "", rownames(L6.predMat2))
+
+# Filter the data frame to keep values greater than 0.5
+L6.predMat2[L6.predMat2 <= 0.5] <- NA
+
+# Remove rows with all NAs (if any)
+L6.predMat2 <- L6.predMat2[!rowSums(is.na(L6.predMat2)) == ncol(L6.predMat2), , drop = FALSE]
+rownames(L6.predMat2) <- rownames(L6.predMat2)
+
+# Extract row names and store them in a list
+row_names_list <- as.list(rownames(L6.predMat2))
+gene_list <- rownames(L6.predMat2)
+gene_data <- org.Hs.eg.db
+
+# Convert gene symbols to ENSEMBL gene IDs
+mart <- useMart("ENSEMBL_MART_ENSEMBL")
+dataset <- useDataset("hsapiens_gene_ensembl", mart = mart)
+gene_symbols <- gene_list
+gene_ids <- getBM(attributes = c("ensembl_gene_id"), filters = "external_gene_name", values = gene_symbols, mart = dataset)
+print(gene_ids)
+
+# Assuming 'gene_ids' is a data frame with two columns, and you want to use the first column in 'gene_ids'
+gene_ids_list <- as.list(gene_ids[, 1])
+
+# Perform GO enrichment analysis using the first column of 'gene_ids'
+enrich_result <- enrichGO(
+  gene = gene_ids_list,
+  OrgDb = gene_data,
+  keyType = "ENSEMBL",
+  ont = "BP",  # Biological Process ontology
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05
+)
+
+
+# View the enrichment results
+head(enrich_result)
+
+barplot(enrich_result, showCategory = 15, title = "GO Enrichment Analysis", x = "GeneRatio")
+
+# Perform KEGG pathway enrichment analysis
+kegg_enrich_result <- enrichKEGG(
+  gene = gene_ids_list,  # Use your gene IDs list
+  OrgDb = gene_data,
+  keyType = "ENSEMBL",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05
+)
+
+# View the KEGG enrichment results
+head(kegg_enrich_result)
+
+
+#Signalome contruction
+kinaseOI = c("PAK1")
+signalomesRes <- Signalomes(KSR = L6.matrices,
+predMatrix = L6.predMat,
+exprsMat = phos.std,
+module_res = 6,
+KOI = kinaseOI)
+## calculating optimal number of clusters...
+## optimal number of clusters = 3
+
+#inspect the modules
+signalomesRes$proteinModules
+Modules<-table(signalomesRes$proteinModules)
+
+
+#Generate signalome map
+### generate palette
+
+
+### generate palette
+#To edit the nested plot funtions clic on them and press F2
+my_color_palette <- grDevices::colorRampPalette(RColorBrewer::brewer.pal(8, "Accent"))
+kinase_all_color <- my_color_palette(ncol(L6.matrices$combinedScoreMatrix))
+names(kinase_all_color) <- colnames(L6.matrices$combinedScoreMatrix)
+kinase_signalome_color <- kinase_all_color[colnames(L6.predMat)]
+plotSignalomeMap(signalomes = signalomesRes, color = kinase_signalome_color)
+
+
+#Unested Plot function
+color = kinase_signalome_color
+df <- stack(signalomesRes$kinaseSubstrates)
+modules <- signalomesRes$proteinModule
+names(modules) <- sapply(strsplit(as.character(names(signalomesRes$proteinModules)), 
+                                  ";"), "[[", 1)
+df$cluster <- modules[df$values]
+df_balloon <- df
+df_balloon <- na.omit(df_balloon) %>% dplyr::count(cluster, 
+                                                   ind)
+df_balloon$ind <- as.factor(df_balloon$ind)
+df_balloon$cluster <- as.factor(df_balloon$cluster)
+df_balloon <- tidyr::spread(df_balloon, ind, n)[, -1]
+df_balloon[is.na(df_balloon)] <- 0
+df_balloon <- do.call(rbind, lapply(seq(nrow(df_balloon)), 
+                                    function(x) {
+                                        res <- sapply(df_balloon[x, ], function(y) y/sum(df_balloon[x, 
+                                        ]) * 100)
+                                    }))
+df_balloon <- reshape2::melt(as.matrix(df_balloon))
+colnames(df_balloon) <- c("cluster", "ind", "n")
+g <- ggplot2::ggplot(df_balloon, aes(x = cluster, y = ind)) + 
+    geom_point(aes(col = ind, size = n)) + scale_color_manual(values = color) + 
+    scale_size_continuous(range = c(1, 17)) + theme_classic() + 
+    theme(aspect.ratio = 1.5, legend.position = "none", 
+          axis.line = element_blank(), axis.title = element_blank(), 
+          panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank())
+g
+
+#plot kinase network
+plotKinaseNetwork(KSR = L6.matrices,
+predMatrix = predMat,
+threshold = 0.95,
+color = kinase_all_color)
+
+
+
+
+```
+color = kinase_signalome_color
+df <- stack(signalomesRes$kinaseSubstrates)
+  modules <- signalomesRes$proteinModule
+  names(modules) <- sapply(strsplit(as.character(names(signalomesRes$proteinModules)), 
+    ";"), "[[", 1)
+  df$cluster <- modules[df$values]
+  df_balloon <- df
+  df_balloon <- na.omit(df_balloon) %>% dplyr::count(cluster, 
+    ind)
+  df_balloon$ind <- as.factor(df_balloon$ind)
+  df_balloon$cluster <- as.factor(df_balloon$cluster)
+  df_balloon <- tidyr::spread(df_balloon, ind, n)[, -1]
+  df_balloon[is.na(df_balloon)] <- 0
+  df_balloon <- do.call(rbind, lapply(seq(nrow(df_balloon)), 
+    function(x) {
+      res <- sapply(df_balloon[x, ], function(y) y/sum(df_balloon[x, 
+        ]) * 100)
+    }))
+  df_balloon <- reshape2::melt(as.matrix(df_balloon))
+  colnames(df_balloon) <- c("cluster", "ind", "n")
+  g <- ggplot2::ggplot(df_balloon, aes(x = cluster, y = ind)) + 
+    geom_point(aes(col = ind, size = n)) + scale_color_manual(values = color) + 
+    scale_size_continuous(range = c(1, 17)) + theme_classic() + 
+    theme(aspect.ratio = 0.5, legend.position = "bottom", 
+      axis.line = element_blank(), axis.title = element_blank(), 
+      panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank())
+  g

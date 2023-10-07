@@ -1,0 +1,668 @@
+---
+title: "Agregation analysis"
+author: "Frito"
+date: "28/10/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Data Analysis part1
+suppressPackageStartupMessages({
+  library(calibrate)
+  library(limma)
+  library(directPA)
+  library(org.Hs.eg.db)
+  library(reactome.db)
+  library(annotate)
+  library(PhosR)
+  library(ggplot2)
+  library(ClueR)
+  library(reactome.db)
+  library(dplyr)
+  library(ggrepel)
+  library(tibble)
+  library(clusterProfiler)
+  library(edgeR)
+
+})
+
+#Set up the data> the input data is supposed to be pre-processed intensity values for the groups in the cols and residues in the rows, works for other analysis too 
+
+#load data in abundances
+#remove duplicates first
+testAg=read.csv("YOURLOCATION/dataagr.csv")
+row.names(testAg) = testAg [,1]
+testAg [,1] = NULL
+
+#transform to Log2
+testAgL = log2(testAg)
+
+#plot an histogram
+#plot histogram from one the data points
+
+
+
+DAtah <-testAg$WT_exp1
+hist(DAtah)
+
+
+DAtah <-testAg$L166P_exp1
+hist(DAtah)
+
+#PCA analysis with edgeR use the raw data
+
+z <- DGEList(counts=testAg[,1:9], genes=row.names(testAg))
+z = calcNormFactors(z)
+mycolors <-c("deepskyblue","deepskyblue","deepskyblue","darkorange2","darkorange2","darkorange2","darkorange3","darkorange3","darkorange3")
+
+#plots a PCA from norm samples
+mds<- plotMDS(z, top=500, col=mycolors,pch = 19, gene.selection="common",dim.plot=c(2,2), cex=1.4)
+or
+mds<- plotMDS(z, top=500, col=mycolors,pch = 19, gene.selection="common",dim.plot=c(1,2), cex=1.4, ylim=c(-1,1),xlim=c(-1.7,1.7))
+
+# PCA with ggplot
+mds <- plotMDS(z)
+toplot <- data.frame(Dim1 = mds$x, Dim2 = mds$y, Group = factor(paste0("Grp", rep(1:2, each = 3))))
+
+ggplot(toplot, aes(Dim1, Dim2, colour = Group)) + geom_point()
+
+
+
+#Differential analysis with limma, the data needs to be normalized in log2, works for phospho or proteomics
+
+data("PhosphoSitePlus")
+
+data("PhosphoELM")
+
+ppe <- PhosphoExperiment(assays = list(Quantification = as.matrix(testAgL)))
+                         
+GeneSymbol(ppe) <- sapply(strsplit(rownames(ppe), ";"), "[[", 1)
+
+
+sites = paste(sapply(GeneSymbol(ppe), function(x)x),";",
+                 
+                 ";", sep = "")
+
+
+# fit linear model for each phosphosite or protein
+f <- gsub("_exp\\d", "", colnames(ppe))
+X <- model.matrix(~ f - 1)
+fit <- lmFit(SummarizedExperiment::assay(ppe, "Quantification"), X)
+
+
+# extract top-ranked phosphosites for each condition compared to basal
+
+table.WT <- topTable(eBayes(fit), number=Inf, coef = 2)
+table.L166P <- topTable(eBayes(fit), number=Inf, coef = 1)
+DE1.RUV <- c( sum(table.WT[,"adj.P.Val"] < 0.01), sum(table.L166P[,"adj.P.Val"] < 0.01))
+
+# extract top-ranked phosphosites for each group comparison
+
+contrast.matrix1 <- makeContrasts(fL166P-fWT, levels=X)  # defining group comparisons
+fit1 <- contrasts.fit(fit, contrast.matrix1)
+table.L166PVSWT <- topTable(eBayes(fit1), number=Inf)
+
+
+
+DE2.RUV <- c(sum(table.L166PVSWT[,"adj.P.Val"] < 0.01))
+o <- rownames(table.L166PVSWT)
+Tc <-  cbind(table.L166PVSWT[o,"logFC"])
+rownames(Tc) <- sites[match(o, rownames(ppe))]
+colnames(Tc) <- c("Log2FC")
+#data formating to save
+table.L166PVSWT_S <- table.L166PVSWT %>%
+  rownames_to_column(var="Gene_Symbol")
+
+write.csv(table.L166PVSWT_S,"YOURLOCATION/table.L166PVSWTnew_samplesREV.csv")
+
+#Add the Wench test
+P_values_combined_KOs <- read.csv("P values combined KOs.csv")
+row.names(P_values_combined_KOs) = P_values_combined_KOs [,1]
+
+table.L166PVSWT_S=read.csv("YOURLOCATION/table.L166PVSWTnew_samplesREV.csv")
+
+row.names(table.L166PVSWT_S) = table.L166PVSWT_S [,2]
+table.L166PVSWT_S [,1:2] = NULL
+
+#Plot volcano with select protein labels
+datad<-table.L166PVSWT_S[, c(5)]
+Log_adj_P<--log10(datad)
+table.L166PVSWTLog <- cbind(table.L166PVSWT_S, Log_adj_P)
+table.L166PVSWTLog2 <- table.L166PVSWTLog %>% rownames_to_column(var="Proteins")
+table.L166PVSWT_FULL<- merge(table.L166PVSWTLog2,P_values_combined_KOs,by="Proteins")
+
+write.csv(table.L166PVSWT_FULL,"YOURLOCATION/table.L166PVSWTnew_samplesREV_FULL.csv")
+
+
+table.L166PVSWT_FULL$genelabels <- ""
+table.L166PVSWT_FULL$genelabels <- factor(table.L166PVSWT_FULL$Proteins, levels = c("IL18", "ANXA8L1","SERPINE1","C5","TXNRD2","ATP10A","FGB","TIMP1
+","SNCA","FBLN5","VIM","CD44","C1QBP","AMIGO2","PINK1","FABP7","SOX9","PARK7","LAMP2","ANXA3","TXNRD1","HSPA1A"))
+table.L166PVSWT_FULL$genelabels <- ifelse(table.L166PVSWT_FULL$Proteins %in% c("IL18", "ANXA8L1","SERPINE1","C5","TXNRD2","ATP10A","FGB","TIMP1
+","SNCA", "FBLN5","VIM","CD44","C1QBP","AMIGO2","PINK1","FABP7","SOX9","PARK7","LAMP2","ANXA3","TXNRD1","HSPA1A"), 
+                            as.character(table.L166PVSWT_FULL$Proteins), NA)
+
+#plot vocano with limma P value
+ggplot(table.L166PVSWT_FULL, aes(logFC, Log_adj_P, label = genelabels, color=I(ifelse(logFC < 2, 'darkgray', "darkorange2")), alpha = I(ifelse(Log_adj_P < 2, 0.4, 0.7)))) + 
+  geom_point() +
+  geom_text_repel(col = "black", na.rm = TRUE, box.padding = unit(0.45, "lines"),nudge_x =4,segment.curvature = 0.1, hjust = 1) + 
+  theme(legend.title = element_blank(), text = element_text(size = 20))+
+theme_classic() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "WT vs. DJ1 L166P",
+       x = "Log2FC",
+       y = "-Log10p") +
+  geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+  geom_hline(yintercept = -log10(0.01), col = "red") +
+  coord_cartesian(xlim = c(-6, 6), ylim = c(0, 7))
+
+
+#plot vocano with Wench P value
+ggplot(table.L166PVSWT_FULL, aes(logFC, p_value, label = genelabels, color=I(ifelse(logFC < 2, 'darkgray', "darkorange2")), alpha = I(ifelse(p_value< 2, 0.4, 0.7)))) + 
+  geom_point() +
+  geom_text_repel(col = "black", na.rm = TRUE, box.padding = unit(0.45, "lines"),nudge_x =4,segment.curvature = 0.1, hjust = 1) + 
+  theme(legend.title = element_blank(), text = element_text(size = 20))+
+theme_classic() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "WT vs. DJ1 L166P",
+       x = "Log2FC",
+       y = "-Log10p") +
+  geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+  geom_hline(yintercept = -log10(0.01), col = "red") +
+  coord_cartesian(xlim = c(-6, 6), ylim = c(0, 8))
+
+#Pathway analysis using phosphoR package for phospho proteomics
+# summary phosphosite-level information to proteins for performing downstream
+# gene-centric analyses.
+Tc.gene <- phosCollapse(Tc, id=gsub( rownames(Tc)), 
+                        stat=apply(abs(Tc), 1, max), by = "max")
+geneSet <- names(sort(Tc.gene[,1], 
+                        decreasing = TRUE))[seq(round(nrow(Tc.gene) * 0.05))]
+
+head(geneSet)
+
+
+
+#Make the Reactome anottation
+pathways = as.list(reactomePATHID2EXTID)
+
+path_names = as.list(reactomePATHID2NAME)
+name_id = match(names(pathways), names(path_names))
+names(pathways) = unlist(path_names)[name_id]
+
+pathways = pathways[which(grepl("Homo sapiens", names(pathways), ignore.case = TRUE))]
+
+pathways = lapply(pathways, function(path) {
+    gene_name = unname(getSYMBOL(path, data = "org.Hs.eg"))
+    toupper(unique(gene_name))
+})
+
+# summary phosphosite-level information to proteins for performing downstream
+# gene-centric analyses.
+
+
+# 1D gene-centric pathway analysis
+path1 <- pathwayOverrepresent(geneSet, annotation=pathways, 
+                                universe = rownames(Tc.gene), alter = "greater")
+path2 <- pathwayRankBasedEnrichment(geneSet, 
+                                    annotation=pathways, universe = rownames(Tc.gene),
+                                    alter = "greater")
+
+lp1 <- -log10(as.numeric(path2[names(pathways),1]))
+lp2 <- -log10(as.numeric(path1[names(pathways),1]))
+plot(lp1, lp2, ylab="Overrepresentation (-log10 pvalue)", xlab="Rank-based enrichment (-log10 pvalue)", main="Comparison of 1D pathway analyses", xlim = c(0, 11))
+
+# select highly enriched pathways
+sel <- which(lp1 > 2.5 & lp2 > 1.3)
+textxy(lp1[sel], lp2[sel], gsub("_", " ", gsub("REACTOME_", "", names(pathways)))[sel])
+
+ggplot(data = path1, aes(y = row.names(path1), x = pvalue, fill = `z-score`)) +
+  geom_col(color = "black", position = "dodge") +
+  geom_vline(xintercept = -log10(0.05)) +
+  theme_classic() +
+  theme(axis.title.y = element_blank(),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5, vjust = 2)) +
+  labs(title = "TdTomato Positive Top Canonical Pathways") +
+  scale_fill_distiller(palette = "RdBu") +
+  coord_cartesian(xlim = c(0, 3.65))
+
+# Cluster analysis
+library("superheat")
+
+DataLog = log2(testAg)
+
+superheat(DataLog, pretty.order.rows = TRUE, extreme.values.na = FALSE, col.dendrogram = TRUE, title = "Top 500 genes", title.alignment = "center", grid.hline = FALSE, grid.vline = FALSE, smooth.heat = TRUE,heat.pal = viridis::inferno(10),
+          row.dendrogram = TRUE, bottom.label.size=2)
+
+
+as.data.frame(path1)
+
+#Pathfinder
+library(pathfindR)
+oP <- (table.L166PVSWT_FULL [,1])
+TcP <-cbind(oP2,table.L166PVSWT_FULL[c(2,6)])
+
+
+#analysis using the limma adjusted p value
+#with GO terms
+output_df <- run_pathfindR(TcP, gene_sets = "GO-MF")
+write.csv(output_df,"YOURLOCATION/pathfindR_goterms_p001.csv")
+
+#with KEGG terms
+output_df1 <- run_pathfindR(TcP)
+write.csv(output_df1,"YOURLOCATION/pathfindR_keeg_p001.csv")
+
+#welch_P
+oP2 <- (table.L166PVSWT_FULL[,1])
+oP_p <- (table.L166PVSWT_FULL [,9])
+oP_pe <- (1/10^(oP_p))
+TcP2 <-cbind(oP2,table.L166PVSWT_FULL[c(2)],oP_pe)
+output_df1 <- run_pathfindR(TcP2)
+write.csv(output_df1,"YOURLOCATION/pathfindR_WELCH_KEGGterms.csv")
+
+#Plot the charts.
+output_df2<- output_df1[c(1,2,5,7,10,15,16,19,25,39), ]
+
+enrichment_chart(output_df2, top_terms = 20, plot_by_cluster = FALSE, 
+  num_bubbles = 4, even_breaks = TRUE) 
+
+# PLot simple chart
+ggplot(data = output_df2, aes(y = `Term_Description`, x = Fold_Enrichment, fill = -log(lowest_p))) +
+  geom_col(color = "black", position = "dodge") +
+  geom_vline(xintercept = -log10(0.1)) +
+  theme_classic() +
+  theme(axis.title.y = element_blank(),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5, vjust = 2)) +
+  labs(title =  "Top Pathways") +
+  scale_fill_distiller(palette = "RdBu") +
+  coord_cartesian(xlim = c(0, 3.65))
+
+#clustering the pathways
+clustered_df1 <- cluster_enriched_terms(enrichment_res = output_df2,
+                                       method = "fuzzy",
+                                       kappa_threshold = 0.5,plot_clusters_graph = TRUE)
+cluster_graph_vis(
+ clustered_df1,
+  kappa_mat,
+  output_df1,
+  kappa_threshold = 0.35,
+  use_description = FALSE,
+)
+
+
+output_dfTG<- output_df1[c(7,10,25,39), ]
+term_gene_graph(output_dfTG, num_terms = 3, node_size = "p_val", use_description = TRUE)
+
+UpSet_plot(output_dfTG, use_description = TRUE)
+
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#aggregation scores for fold change
+#remove duplicates first
+agrSC=read.csv("C:/Users/gusta/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Final analisys and Agregation analsys/agregation scores1.csv")
+row.names(agrSC) = agrSC[,1]
+agrSC[,1] = NULL
+
+P_values_combined_KOs=read.csv("C:/Users/gusta/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Final analisys and Agregation analsys/New samples/Reanalisys for revisions/table.L166PVSWTnew_samplesREV_FULL.csv")
+row.names(P_values_combined_KOs) = P_values_combined_KOs[,2]
+P_values_combined_KOs[,2] = NULL
+P_values_combined_KOs[,1] = NULL
+P_values_combined_KOs[,11] = NULL
+
+
+dd <- merge(P_values_combined_KOs,agrSC,by=0,all=TRUE)
+res <- subset(dd,select=-c(Row.names))
+rownames(res) <- dd[,'Row.names'] 
+
+res1<-na.omit(res)
+res1<-res1 %>% 
+    filter(!grepl('—', TANGO))
+res1<-res1 %>%     
+filter(!grepl('—', ZaggSC))
+
+write.csv(res1,"D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/resnew.csv")
+
+res2=read.csv("D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/resnew.csv")
+row.names(res2) = res2[,1]
+res2[,1] = NULL   
+
+#Incorporate abundances cut off
+resABS=read.csv("D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/New samples/KO_ABS_AVG.csv")
+row.names(resABS) = resABS[,1]
+resABS[,1] = NULL   
+
+dd1 <- merge(res2,resABS,by=0,all=TRUE)
+resabsC <- subset(dd1,select=-c(Row.names))
+rownames(resabsC) <- dd1[,'Row.names']
+resabsC<-na.omit(resabsC)
+
+#Plot scatter from the data
+library(tidyverse)
+res1$ZaggSC <- as.numeric(res1$ZaggSC)
+res1 %>% 
+  ggplot(aes(x=ZaggSC,y=logFC)) +
+  geom_point(alpha=0.5) +
+  xlim(-5,5) +
+  ylim(-5,5) +
+  labs(x="ZaggSC", y= "logFC",
+       title="Aggregation risk")+
+  geom_smooth()
+
+res1$TANGO <- as.numeric(res1$TANGO)
+res1$logFC <- as.numeric(res1$logFC)
+
+ res1 %>% 
+  ggplot(aes(x=TANGO,y=logFC)) +
+  geom_point(alpha=0.5) +
+  xlim(0,5) +
+  ylim(-5,5) +
+  labs(x="TANGO", y= "logFC",
+       title="Aggregation risk")+
+  geom_smooth()
+
+  
+ subsetted_data <- res1 %>%
+  filter(TANGO > 3, logFC > 2.5)
+ 
+ # Check the pathways enrichment
+ # Extract row names from the subsetted_data
+gene_list <- rownames(subsetted_data)
+
+entrez_ids <- mapIds(org.Hs.eg.db, keys = gene_list, column = "ENTREZID", keytype = "SYMBOL")
+
+
+# Convert gene symbols to ENSEMBL gene IDs
+mart <- useMart("ENSEMBL_MART_ENSEMBL")
+dataset <- useDataset("hsapiens_gene_ensembl", mart = mart)
+gene_symbols <- gene_list
+gene_ids <- getBM(attributes = c("ensembl_gene_id"), filters = "external_gene_name", values = gene_symbols, mart = dataset)
+print(gene_ids)
+
+
+go_enrich_result <- enrichGO(
+  gene = entrez_ids,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "MF",  # You can choose "BP" for Biological Process, "CC" for Cellular Component, or "MF" for Molecular Function
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05
+)
+barplot(go_enrich_result, showCategory = 15, title = "GO Enrichment Analysis", x = "GeneRatio")   
+     
+
+#Pathfinder
+library(pathfindR)
+
+#prepare the data table
+subsetted_data2 <- subsetted_data[, c(1, 7)]
+subsetted_data2$Original_P <- 1/10^subsetted_data2$Log_adj_P
+subsetted_data3 <- subsetted_data2[, -2]
+subsetted_data3 <- rownames_to_column(subsetted_data3, var = "RowNames")
+colnames(subsetted_data3) <- c("Gene_symbol", "logFC", "FDR_p")
+
+
+#analysis using theadjusted p value
+#with GO terms
+output_df <- run_pathfindR(subsetted_data3, gene_sets = "KEGG")
+
+output_df <- run_pathfindR(subsetted_data3, gene_sets = "GO-All")
+
+
+#aggregation scores for abundances
+#remove duplicates first
+testAg=read.csv("D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/New samples/dataagrFC.csv")
+row.names(testAg) = testAg [,1]
+testAg [,1] = NULL
+
+
+WT<-select(testAg, starts_with("WT"))
+L166P<-select(testAg, starts_with("L166P"))
+
+L166P<-mutate(L166P, L166pMean = rowMeans(L166P), na.rm = FALSE) 
+WT<-mutate(WT, WTMean = rowMeans(WT), na.rm = FALSE) 
+
+dp<-select(WT, starts_with("WTMean"))
+dp1<-select(L166P, starts_with("L166pMean"))
+Meanabd <- merge(dp,dp1,by=0,all=TRUE)
+row.names(Meanabd) = Meanabd [,1]
+Meanabd [,1] = NULL
+
+dd <- merge(Meanabd,agrSC,by=0,all=TRUE)
+res <- subset(dd,select=-c(Row.names))
+rownames(res) <- dd[,'Row.names'] 
+
+res1<-na.omit(res)
+res1<-res1 %>% 
+    filter(!grepl('—', TANGO))
+res1<-res1 %>%     
+filter(!grepl('—', ZaggSC))
+
+write.table(res1,"D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/resabsNewFC.txt")
+#Reaload manually from here
+
+resabs <- read.table("D:/Dropbox (Personal)/Mount Sinai/Single cell project/DJ1/Astros/Proteomics/Agregation analsys/resabsNewFC.txt", row.names=1, quote="\"", comment.char="")
+
+resabs3<-subset(resabs, ZaggSC > 2)
+
+sum(res1$WTMean)
+sum(res1$L166pMean)
+
+
+#Plot scatter from the data
+library(tidyverse)
+
+
+a<-resabs %>% 
+  ggplot(aes(x=ZaggSC,y=L166pMean)) +
+  geom_point(alpha=0.5,colour="darkblue") +
+  xlim(-4,5) +
+  ylim(0,30) +
+  labs(x="ZaggSC", y= "Abundance",
+       title="Aggregation risk")+
+  log10="y"
+
+
+z<-resabs %>% 
+  ggplot(aes(x=ZaggSC,y=WTMean, colour="red")) +
+  geom_point(alpha=0.5,colour="red") +
+  xlim(-4,5) +
+  ylim(0,30) +
+  labs(x="ZaggSC", y= "Abundance",
+       title="Aggregation risk")+
+
+
+#combined plot full data
+ggplot() +               
+  geom_point(data = resabs, aes(x=ZaggSC,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  geom_point(data = resabs, aes(x=ZaggSC,y=WTMean), 
+             fill = "green", color = "black", 
+             size = 2, shape = 21)+
+  labs(x="ZaggSC", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0,5) +
+  ylim(0,5)+
+   theme_classic()
+   
+
+#combined plot high risk subset data ZaggSC
+resabsD <- res2 %>%
+  rownames_to_column(var="Proteins")
+  
+ggplot() +               
+  geom_point(data = resabs, aes(x=ZaggSC,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  geom_point(data = resabs, aes(x=ZaggSC,y=WTMean), 
+             fill = "green", color = "black", 
+             size = 2, shape = 21)+
+  labs(x="ZaggSC", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0,4.5) +
+  ylim(0,5)+
+   theme_classic()+
+   geom_text( 
+    data=resabsD %>% filter(ZaggSC>2 & L166pMean>3), # Filter data first
+    aes(x=ZaggSC,y=L166pMean,label=Proteins, nudge_y =2, 
+     label.padding =NULL, label.size=NULL,check_overlap=TRUE,)
+  )
+  
+#combined plot high risk subset data ZaggSC
+resabsD <- resabs %>%
+  rownames_to_column(var="Proteins")
+  
+ggplot() +               
+  geom_point(data = resabs, aes(x=ZaggSC,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  
+  labs(x="ZaggSC", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0,4.5) +
+  ylim(0,5)+
+   theme_classic()+
+   geom_text( 
+    data=resabsD %>% filter(ZaggSC>2 & L166pMean>3), # Filter data first
+    aes(x=ZaggSC,y=L166pMean,label=Proteins, nudge_y =2, 
+     label.padding =NULL, label.size=NULL,check_overlap=TRUE,)
+  )
+
+#TANGO
+ 
+  sp<-ggplot(resabs,aes(x=L166pMean,y=TANGO)) +
+  geom_point(alpha=0.5) +
+  xlim(0, 30) +
+  scale_y_continuous(name = "TANGO Score", limits = c(0,5))
+  labs(x="logFC", y= "TANGO Score",
+       title="Aggregation risk")+
+    geom_smooth(method = ln)
+  sp
+  
+#combined plot high risk subset data TANGO
+
+resabsD <- resabs %>%
+  rownames_to_column(var="Proteins")
+    
+
+ggplot() +               
+  geom_point(data = resabs3, aes(x=TANGO,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  geom_point(data = resabs3, aes(x=TANGO,y=WTMean), 
+             fill = "green", color = "black", 
+             size = 2, shape = 21)+
+  labs(x="TANGO", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0,5) +
+  ylim(0,5)+
+   theme_classic()+
+   geom_text_repel( 
+    data=resabsD %>% filter(TANGO>3.8 & L166pMean>1), # Filter data first
+    aes(x=TANGO,y=L166pMean,label=Proteins, 
+     point.padding = 0.5, label.size=NULL,check_overlap=TRUE,nudge_x =6,segment.curvature = 0.1,
+                  segment.ncp = 3,
+                  segment.angle = 20,
+                  direction = "x",
+                  hjust = 1 )
+  )
+
+#combined plot high risk subset data TANGO
+
+resabsD <- resabs %>%
+  rownames_to_column(var="Proteins")
+    
+
+ggplot() +               
+  geom_point(data = resabs, aes(x=TANGO,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  labs(x="TANGO", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0,5) +
+  ylim(0,35)+
+   theme_classic()+
+   geom_text_repel( 
+    data=resabsD %>% filter(TANGO>3.5 & L166pMean>10), # Filter data first
+    aes(x=TANGO,y=L166pMean,label=Proteins, 
+     point.padding = 0.5, label.size=NULL,check_overlap=TRUE,nudge_x =6,segment.curvature = 0.1,
+                  segment.ncp = 3,
+                  segment.angle = 20,
+                  direction = "x",
+                  hjust = 1 )
+  )
+     
+# x in log scale  
+datad<-resabs[, c(4)]
+d<-log10(datad)
+resabsL <- cbind(resabs, d)
+    
+ggplot() +               
+  geom_point(data = resabsL, aes(x=d,y=L166pMean), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  geom_point(data = resabsL, aes(x=d,y=WTMean), 
+             fill = "green", color = "black", 
+             size = 2, shape = 21)+
+  labs(x="TANGO", y= "Abundance",
+       title="Aggregation risk")+
+ xlim(0.3,0.7) +
+  ylim(0,35)+
+   theme_classic()+
+   geom_text_repel( 
+    data=resabsD %>% filter(TANGO>4 & L166pMean>20), # Filter data first
+    aes(x=TANGO,y=L166pMean,label=Proteins, 
+     point.padding = 0.5, label.size=NULL,check_overlap=TRUE,nudge_x =5,nudge_y =25 )
+  )
+
+
+#new plots for FC data
+#combined plot high risk subset data ZaggSC
+resabsC <- resabsC %>%
+  rownames_to_column(var="Proteins")
+data=resabsC %>% filter(KO_ABS_AVG>12)
+  
+ggplot() +               
+  geom_point(data = data, aes(x=ZaggSC,y=FC), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  
+  labs(x="ZaggSC", y= "Log2 FC",
+       title="Aggregation risk")+
+ xlim(0,4.5) +
+  ylim(0.9,5)+
+   theme_classic()+
+   geom_text( 
+    data=data %>% filter(ZaggSC>2 & FC>2.5), # Filter data first
+    aes(x=ZaggSC,y=FC,label=Proteins, nudge_y =2, 
+     label.padding =NULL, label.size=NULL,check_overlap=TRUE,)
+  )
+
+#tango
+ggplot() +               
+  geom_point(data = data, aes(x=TANGO,y=FC), 
+             fill = "orange", color = "black",
+             size = 2, shape = 21)+
+  
+  labs(x="TANGO", y= "Log2 FC",
+       title="Aggregation risk")+
+ xlim(0,5) +
+  ylim(0.9,5)+
+   theme_classic()+
+   geom_text_repel( 
+    data=data %>% filter(TANGO>3.79 & FC>2.1), # Filter data first
+    aes(x=TANGO,y=FC,label=Proteins, 
+     point.padding = 0.5, label.size=NULL,check_overlap=TRUE,nudge_x =6,segment.curvature = 0.1,
+                  segment.ncp = 3,
+                  segment.angle = 20,
+                  direction = "x",
+                  hjust = 1 )
+  )
+
+
+```
